@@ -42,6 +42,10 @@ plugins:
   self-msg-plugin:
     enabled: true
     priority: 1998
+  # 推送消息到MQTT插件（消息日志输出）
+  push-msg-to-mqtt:
+    enabled: true
+    priority: 500
 
 wxgf:
   # 微信GF解析API地址，暂时未开放，查看roammap更新计划

@@ -60,3 +60,4 @@ per_rule_ignores = { "DEP003" = ["omni_bot_sdk"] }
 self-msg-plugin = "omni_bot_sdk.plugins.core.self_msg_plugin:SelfMsgPlugin"
 block-empty-room-plugin = "omni_bot_sdk.plugins.core.block_empty_room_plugin:BlockEmptyRoomPlugin"
 image-aes-plugin = "omni_bot_sdk.plugins.core.image_aes_plugin:ImageAesPlugin"
+push-msg-to-mqtt-plugin = "omni_bot_sdk.plugins.core.push_msg_to_mqtt_plugin:PushMsgToMqttPlugin"
