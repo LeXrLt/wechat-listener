@@ -35,7 +35,7 @@ DEFAULT_MQTT = {
 }
 
 # 订阅的主题，# 为通配符，表示所有层级
-SUBSCRIBE_TOPIC = "msg/#"
+SUBSCRIBE_TOPIC = "wechat/messages"
 
 
 def load_mqtt_config() -> dict:

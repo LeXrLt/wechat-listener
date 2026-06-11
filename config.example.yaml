@@ -43,9 +43,11 @@ plugins:
     enabled: true
     priority: 1998
   # 推送消息到MQTT插件（消息日志输出）
-  push-msg-to-mqtt:
+  push-msg-to-mqtt-plugin:
     enabled: true
     priority: 500
+    push_to_mqtt: true
+    mqtt_topic: wechat/messages
 
 wxgf:
   # 微信GF解析API地址，暂时未开放，查看roammap更新计划
