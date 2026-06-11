@@ -1,0 +1,32 @@
+services:
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: omni-bot-mqtt
+    restart: unless-stopped
+    # 以 root 运行，确保有权限在 /mosquitto/config 下生成密码文件
+    user: root
+    ports:
+      - "1883:1883"   # MQTT, 对应 config.yaml 的 mqtt.port
+      - "9001:9001"   # WebSocket (可选)
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    environment:
+      # 与 config.yaml 中 mqtt.username / mqtt.password 保持一致
+      MQTT_USERNAME: weixin
+      MQTT_PASSWORD: YOUR_MQTT_PASSWORD
+    # 启动时根据上面的用户名/密码生成密码文件，再启动 broker
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        rm -f /mosquitto/config/pwfile &&
+        mosquitto_passwd -b -c /mosquitto/config/pwfile "$$MQTT_USERNAME" "$$MQTT_PASSWORD" &&
+        chown mosquitto:mosquitto /mosquitto/config/pwfile &&
+        chmod 0600 /mosquitto/config/pwfile &&
+        exec mosquitto -c /mosquitto/config/mosquitto.conf
+
+volumes:
+  mosquitto_data:
+  mosquitto_log:
