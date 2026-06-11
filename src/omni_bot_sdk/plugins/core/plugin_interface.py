@@ -1,10 +1,8 @@
 import logging
 from abc import ABC, abstractmethod
-from queue import Queue
 from typing import TYPE_CHECKING, Any, Dict, List, Type
 import json
 
-from omni_bot_sdk.rpa.action_handlers import RPAAction
 from omni_bot_sdk.weixin.message_classes import Message
 from pydantic import BaseModel, ValidationError
 
@@ -22,7 +20,6 @@ class PluginExcuteResponse:
     handled: bool
     should_stop: bool
     response: Dict[str, Any]
-    actions: List[RPAAction]
     message: Message
 
     def __init__(
@@ -31,27 +28,13 @@ class PluginExcuteResponse:
         handled: bool = False,
         should_stop: bool = False,
         response: Dict[str, Any] = None,
-        actions: List[RPAAction] = None,
         message: Message = None,
     ):
         self.plugin_name = plugin_name
         self.handled = handled
         self.should_stop = should_stop
         self.response = response or {}
-        self.actions = actions or []
         self.message = message
-
-    def add_action(self, action: RPAAction):
-        """
-        添加一个RPA动作到响应。
-        """
-        self.actions.append(action)
-
-    def get_actions(self) -> List[RPAAction]:
-        """
-        获取所有RPA动作。
-        """
-        return self.actions or []
 
 
 class PluginExcuteContext:
@@ -123,7 +106,6 @@ class Plugin(ABC):
         self.bot = bot
         self.logger = bot.logger
         self.config = bot.config
-        self.rpa_queue = bot.rpa_task_queue
         self.plugin_config = None
         self.reload_plugin_config()
 
@@ -159,23 +141,6 @@ class Plugin(ABC):
         if hasattr(self.plugin_config, key):
             return getattr(self.plugin_config, key, default)
         return getattr(self.plugin_config, "__dict__", {}).get(key, default)
-
-    def add_rpa_action(self, action: RPAAction):
-        """
-        添加单个RPA动作到队列。
-        Args:
-            action: RPA动作对象
-        """
-        self.add_rpa_actions([action])
-
-    def add_rpa_actions(self, actions: List[RPAAction]):
-        """
-        批量添加RPA动作到队列。
-        线程安全由ProcessorService保证。
-        """
-        if not actions:
-            return
-        self.bot.processor_service.add_rpa_actions(actions)
 
     @classmethod
     @abstractmethod

@@ -4,11 +4,8 @@
 
 from typing import TYPE_CHECKING
 from omni_bot_sdk.plugins.interface import (
-    Bot,
     Plugin,
     PluginExcuteContext,
-    PluginExcuteResponse,
-    DownloadImageAction,
     MessageType,
 )
 from pydantic import BaseModel

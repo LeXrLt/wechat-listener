@@ -5,28 +5,18 @@ import time
 from typing import Any, List, Tuple
 import threading
 
-from omni_bot_sdk.common.queues import message_queue, rpa_task_queue
+from omni_bot_sdk.common.queues import message_queue
 
 # 导入所有将被实例化的核心组件类
 from omni_bot_sdk.common.config import Config
-from omni_bot_sdk.mcp.app import create_app
 from omni_bot_sdk.models import UserInfo
 from omni_bot_sdk.plugins.plugin_manager import PluginManager
-from omni_bot_sdk.rpa.action_handlers import SendImageAction
-from omni_bot_sdk.rpa.controller import RPAController
-from omni_bot_sdk.rpa.image_processor import ImageProcessor
-from omni_bot_sdk.rpa.ocr_processor import OCRProcessor
-from omni_bot_sdk.rpa.window_manager import WindowManager
 from omni_bot_sdk.services.core.database_service import DatabaseService
 from omni_bot_sdk.services.core.message_factory_service import MessageFactoryService
 from omni_bot_sdk.services.core.message_service import MessageService
-from omni_bot_sdk.services.core.mqtt_service import MQTTService
 from omni_bot_sdk.services.core.processor_service import ProcessorService
-from omni_bot_sdk.services.core.rpa_service import RPAService
 from omni_bot_sdk.services.core.user_service import UserService
 from omni_bot_sdk.services.functional.dat_decrypt_service import DatDecryptService
-from omni_bot_sdk.services import NewFriendCheckService
-from omni_bot_sdk.services.functional.weixin_status_service import WeixinStatusService
 from omni_bot_sdk.utils.logging_setup import setup_logging
 from omni_bot_sdk.utils.helpers import ensure_dir_exists
 
@@ -71,14 +61,8 @@ class Bot:
         self.logger.info(f"当前微信版本：{self.user_info.version}（已禁用版本检测，强制启动）")
         # 数据库服务初始化（需最先初始化）
         self.db: DatabaseService = DatabaseService(self.user_service)
-        # RPA相关组件初始化
-        self.image_processor: ImageProcessor = self._create_image_processor()
-        self.ocr_processor: OCRProcessor = self._create_ocr_processor()
-        self.window_manager: WindowManager = self._create_window_manager()
-        self.rpa_controller: RPAController = self._create_rpa_controller()
         # 核心队列
         self.message_queue: queue.Queue = message_queue
-        self.rpa_task_queue: queue.Queue = rpa_task_queue
         # 插件管理器
         self.plugin_manager: PluginManager = PluginManager(self)
         # 所有服务初始化
@@ -87,48 +71,9 @@ class Bot:
         self._components: List[Any] = [
             self.user_service,
             self.db,
-            self.image_processor,
-            self.ocr_processor,
             self.plugin_manager,
             *all_services,
         ]
-
-    def _create_image_processor(self) -> ImageProcessor:
-        """
-        创建ImageProcessor实例。
-        """
-        return ImageProcessor()
-
-    def _create_ocr_processor(self) -> OCRProcessor:
-        """
-        创建OCRProcessor实例，并注入OCR相关配置。
-        """
-        ocr_config = self.config.get("rpa.ocr", {})
-        self.logger.info(f"OCRProcessor configured with: {ocr_config}")
-        return OCRProcessor(ocr_config=ocr_config)
-
-    def _create_window_manager(self) -> WindowManager:
-        """
-        创建WindowManager实例，并注入依赖和RPA配置。
-        """
-        rpa_config = self.config.get("rpa", {})
-        return WindowManager(
-            image_processor=self.image_processor,
-            ocr_processor=self.ocr_processor,
-            rpa_config=rpa_config,
-        )
-
-    def _create_rpa_controller(self) -> RPAController:
-        """
-        创建RPAController实例，并注入所有依赖。
-        """
-        return RPAController(
-            db=self.db,
-            window_manager=self.window_manager,
-            ocr_processor=self.ocr_processor,
-            image_processor=self.image_processor,
-            rpa_config=self.config.get("rpa", {}),
-        )
 
     def _create_services(self) -> Tuple[ProcessorService, List[Any]]:
         """
@@ -136,48 +81,23 @@ class Bot:
         """
         self.logger.info("Initializing all services...")
 
-        weixin_status_service = WeixinStatusService(
-            self.config, self.window_manager, self.image_processor, self.ocr_processor
-        )
         message_service = MessageService(self.message_queue, self.db)
         message_factory_service = MessageFactoryService(self.user_info, self.db)
         processor_service = ProcessorService(
             user_info=self.user_info,
             message_queue=self.message_queue,
-            rpa_task_queue=self.rpa_task_queue,
             db=self.db,
             message_factory_service=message_factory_service,
             plugin_manager=self.plugin_manager,
         )
-        rpa_service = RPAService(self.rpa_task_queue, self.rpa_controller)
-        mqtt_service = None
-        if self.config.get("mqtt", {}).get("host", None) and self.config.get(
-            "mqtt", {}
-        ).get("port", None):
-            mqtt_service = MQTTService(
-                user_info=self.user_info,
-                db=self.db,
-                rpa_task_queue=self.rpa_task_queue,
-                mqtt_config=self.config.get("mqtt", {}),
-            )
-        else:
-            self.logger.warn(
-                "MQTT服务未配置，将无法接收MCP消息，请在config.yaml中配置mqtt服务"
-            )
         dat_decrypt_service = DatDecryptService(self.user_info, self.config)
-        new_friend_check_service = NewFriendCheckService(self.rpa_task_queue, self.db)
 
         services_list = [
-            weixin_status_service,
             message_service,
             message_factory_service,
             processor_service,
-            rpa_service,
             dat_decrypt_service,
-            new_friend_check_service,
         ]
-        if mqtt_service:
-            services_list.append(mqtt_service)
 
         self.dat_decrypt_service = dat_decrypt_service
         self.processor_service = processor_service
@@ -205,7 +125,7 @@ class Bot:
     def setup(self):
         """
         执行所有耗时和阻塞的启动操作。
-        自动调用所有注册组件的setup方法，并确保微信和主窗口初始化。
+        自动调用所有注册组件的setup方法。
         """
         self._notify_status(self.STATUS_STARTING)
         self.logger.info("--- Starting Bot Setup ---")
@@ -215,60 +135,16 @@ class Bot:
                 self.logger.info(f"Setting up {component.__class__.__name__}...")
                 component.setup()
 
-        # 检查微信客户端状态，等待其准备就绪
-        status_service = next(
-            (s for s in self._components if isinstance(s, WeixinStatusService)), None
-        )
-        if status_service:
-            self.logger.info("Checking WeChat status...")
-            while not status_service.check_weixin_status():
-                self.logger.info("Waiting for WeChat client to be ready...")
-                time.sleep(5)
-
-        # 初始化主聊天窗口
-        self.logger.info("Initializing main chat window...")
-        while not self.window_manager.init_chat_window():
-            self.logger.warning(
-                "Failed to initialize chat window, retrying in 2 seconds..."
-            )
-            time.sleep(2)
-        self.logger.info("Initializing pyq window...")
-
-        # not include action in oss version
-        """ if not self.window_manager.init_pyq_window():
-            self.logger.warn("Failed to initialize pyq window, exiting...") """
-
         # 启动所有支持start方法的服务
         for component in self._components:
             if hasattr(component, "start"):
                 self.logger.info(f"Starting service {component.__class__.__name__}...")
                 component.start()
-        if (
-            self.config.get("aes_xor_key") is None
-            or len(self.config.get("aes_xor_key")) == 0
-        ):
-            self.find_image_aes()
-        else:
-            self.dat_decrypt_service.setup_lazy()
+
+        self.dat_decrypt_service.setup_lazy()
         self.is_running = True
         self._notify_status(self.STATUS_RUNNING)
         self.logger.info("--- Bot Setup Complete. All services are running. ---")
-
-    def find_image_aes(self):
-        # 给文件助手发图片
-        self.logger.info("正在发送图片到文件助手...")
-        image_path = self.image_processor.generate_image(
-            text="OMNI-BOT",
-            output_filename="test_image.png",
-        )
-        self.rpa_task_queue.put(
-            SendImageAction(
-                image_path=image_path,
-                target="文件传输助手",
-                is_chatroom=False,
-            )
-        )
-        # self.dat_decrypt_service.setup_lazy()
 
     def teardown(self):
         """
@@ -297,9 +173,6 @@ class Bot:
                         f"Error closing {component.__class__.__name__}: {e}",
                         exc_info=True,
                     )
-        if self.mcp_app:
-            pass
-            # self.mcp_app.stop()
         self.is_running = False
         self._notify_status(self.STATUS_STOPPED)
         self.logger.info("--- Bot Teardown Complete. ---")
@@ -314,8 +187,10 @@ class Bot:
             signal.signal(signal.SIGTERM, self._signal_handler)
         try:
             self.setup()
-            self.mcp_app = create_app(self.db, self.user_info, self.config)
-            self.mcp_app.run("streamable-http")
+            self.logger.info("Bot is running. Press Ctrl+C to stop.")
+            # 主循环，保持程序运行
+            while self.is_running:
+                time.sleep(1)
         except Exception as e:
             self._notify_status(self.STATUS_FAILED)
             self.logger.critical(

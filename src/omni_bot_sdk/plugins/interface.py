@@ -14,25 +14,6 @@ from omni_bot_sdk.plugins.core.plugin_interface import (
     PluginExcuteResponse,
 )
 from omni_bot_sdk.weixin.message_classes import Message, MessageType, DownloadStatus
-from omni_bot_sdk.rpa.action_handlers import RPAActionType
-from omni_bot_sdk.rpa.action_handlers import (
-    DownloadImageAction,
-    SendImageAction,
-    SendFileAction,
-    DownloadVideoAction,
-    DownloadFileAction,
-    ForwardMessageAction,
-    SendTextMessageAction,
-    PatAction,
-    Invite2RoomAction,
-    RemoveRoomMemberAction,
-    RenameRoomNameAction,
-    RenameRoomRemarkAction,
-    RenameNameInRoomAction,
-    LeaveRoomAction,
-    SendPyqAction,
-    NewFriendAction,
-)
 
 
 # =====================
@@ -49,10 +30,6 @@ class Bot(Protocol):
     user_service: "UserService"  # 用户服务
     user_info: "UserInfo"  # 当前用户信息
     db: "DatabaseService"  # 数据库服务
-    image_processor: "ImageProcessor"  # 图像处理服务
-    ocr_processor: "OCRProcessor"  # OCR服务
-    window_manager: "WindowManager"  # 窗口管理服务
-    rpa_controller: "RPAController"  # RPA控制器
     plugin_manager: "PluginManager"  # 插件管理器
     dat_decrypt_service: "DatDecryptService"  # dat解密服务
     processor_service: "ProcessorService"  # 处理器服务
@@ -468,236 +445,6 @@ class DatabaseService(Protocol):
         ...
 
 
-class ImageProcessor(Protocol):
-    """
-    图像处理服务协议。
-    提供图像检测、截图、绘图等功能。
-    """
-
-    def setup(self):
-        """
-        初始化图像处理服务。
-        """
-
-    def detect_objects(self, image: Any) -> list:
-        """
-        检测图像中的对象。
-
-        Args:
-            image (Any): 输入的图像对象。
-        Returns:
-            list: 检测到的对象列表。
-        """
-
-    def take_screenshot(self, region: tuple, save_path: Optional[str] = None) -> Any:
-        """
-        截取屏幕区域。
-
-        Args:
-            region (tuple): 截图区域 (x, y, w, h)。
-            save_path (Optional[str]): 保存路径，默认为None。
-        Returns:
-            Any: 截图对象。
-        """
-
-    def draw_boxes_on_screen(
-        self,
-        screenshot: Any,
-        parsed_content: list,
-        output_path: str = None,
-        start: tuple = None,
-    ) -> Any:
-        """
-        在截图上绘制检测框。
-
-        Args:
-            screenshot (Any): 截图对象。
-            parsed_content (list): 检测内容。
-            output_path (str, optional): 输出路径。
-            start (tuple, optional): 起始坐标。
-        Returns:
-            Any: 绘制后的图片对象。
-        """
-
-
-class OCRProcessor(Protocol):
-    """
-    OCR服务协议。
-    提供图像OCR识别功能。
-    """
-
-    def setup(self):
-        """
-        初始化OCR服务。
-        """
-
-    def process_image(self, image_path: str = None, image: Any = None) -> list:
-        """
-        对图片进行OCR识别。
-
-        Args:
-            image_path (str, optional): 图片路径。
-            image (Any, optional): 图片对象。
-        Returns:
-            list: 识别结果。
-        """
-
-    def find_text(
-        self, image: Any, target_text: str, similarity_threshold: float = 0.8
-    ) -> list:
-        """
-        在图片中查找指定文本。
-
-        Args:
-            image (Any): 图片对象。
-            target_text (str): 目标文本。
-            similarity_threshold (float, optional): 相似度阈值，默认为0.8。
-        Returns:
-            list: 匹配结果。
-        """
-
-
-class WindowManager(Protocol):
-    """
-    窗口管理服务协议。
-    提供窗口激活、切换、获取等功能。
-    """
-
-    def activate_input_box(self, offset_x: int = 0) -> bool:
-        """
-        激活输入框。
-
-        Args:
-            offset_x (int, optional): X轴偏移，默认为0。
-        Returns:
-            bool: 是否激活成功。
-        """
-
-    def get_icon_position(self, icon_name: str) -> Optional[Dict]:
-        """
-        获取图标位置。
-
-        Args:
-            icon_name (str): 图标名称。
-        Returns:
-            Optional[Dict]: 图标位置信息。
-        """
-
-    def init_chat_window(self) -> bool:
-        """
-        初始化聊天窗口。
-
-        Returns:
-            bool: 是否初始化成功。
-        """
-
-    def switch_session(self, target: str) -> bool:
-        """
-        切换会话。
-
-        Args:
-            target (str): 目标会话。
-        Returns:
-            bool: 是否切换成功。
-        """
-
-    def switch_window(self, target: str) -> bool:
-        """
-        切换窗口。
-
-        Args:
-            target (str): 目标窗口。
-        Returns:
-            bool: 是否切换成功。
-        """
-
-    def switch_menu(self, target: str) -> bool:
-        """
-        切换菜单。
-
-        Args:
-            target (str): 目标菜单。
-        Returns:
-            bool: 是否切换成功。
-        """
-
-    def get_window(self, windowType: Any, all: bool = False) -> Any:
-        """
-        获取窗口对象。
-
-        Args:
-            windowType (Any): 窗口类型。
-            all (bool, optional): 是否获取全部，默认为False。
-        Returns:
-            Any: 窗口对象。
-        """
-
-    def open_friend_window(self) -> Any:
-        """
-        打开好友窗口。
-
-        Returns:
-            Any: 窗口对象。
-        """
-
-    def open_friend_send_window(self) -> Any:
-        """
-        打开好友发送窗口。
-
-        Returns:
-            Any: 窗口对象。
-        """
-
-    def close_all_windows(self):
-        """
-        关闭所有窗口。
-        """
-
-    def open_close_sidebar(self, close: bool = False) -> bool:
-        """
-        打开或关闭侧边栏。
-
-        Args:
-            close (bool, optional): 是否关闭，默认为False。
-        Returns:
-            bool: 操作是否成功。
-        """
-
-    def wait_for_window(
-        self, window_type: Any, all: bool = False, timeout: int = 5
-    ) -> Any:
-        """
-        等待窗口出现。
-
-        Args:
-            window_type (Any): 窗口类型。
-            all (bool, optional): 是否获取全部，默认为False。
-            timeout (int, optional): 超时时间，默认为5秒。
-        Returns:
-            Any: 窗口对象。
-        """
-
-
-class RPAController(Protocol):
-    """
-    RPA控制器协议。
-    负责执行RPA动作，管理RPA任务队列。
-    """
-
-    db: DatabaseService  # 数据库服务
-    window_manager: WindowManager  # 窗口管理服务
-    ocr_processor: OCRProcessor  # OCR服务
-    image_processor: ImageProcessor  # 图像处理服务
-
-    def execute_action(self, action: "RPAAction") -> bool:
-        """
-        执行RPA动作。
-
-        Args:
-            action (RPAAction): RPA动作对象。
-        Returns:
-            bool: 是否执行成功。
-        """
 
 
 class PluginManager(Protocol):
@@ -782,46 +529,6 @@ class MessageService(Protocol):
         """
 
 
-class RPAService(Protocol):
-    """
-    RPA服务协议。
-    提供RPA服务的启动、停止、状态获取等功能。
-    """
-
-    def start(self):
-        """
-        启动RPA服务。
-        """
-
-    def stop(self):
-        """
-        停止RPA服务。
-        """
-
-    def get_status(self) -> dict:
-        """
-        获取RPA服务状态。
-
-        Returns:
-            dict: 服务状态信息。
-        """
-
-
-class MQTTService(Protocol):
-    """
-    MQTT服务协议。
-    提供MQTT消息的初始化、启动等功能。
-    """
-
-    def setup(self):
-        """
-        初始化MQTT服务。
-        """
-
-    def start(self):
-        """
-        启动MQTT服务。
-        """
 
 
 class DatDecryptService(Protocol):
@@ -852,26 +559,17 @@ class DatDecryptService(Protocol):
         ...
 
 
-class NewFriendCheckService(Protocol):
-    """
-    新好友检测服务协议。
-    提供新好友检测功能。
-    """
-
-    pass
-
 
 class ProcessorService(Protocol):
     """
     处理器服务协议。
-    负责处理消息、RPA任务、插件管理等核心业务逻辑。
+    负责处理消息、插件管理等核心业务逻辑。
     """
 
     user_info: "UserInfo"  # 当前用户信息
     db: "DatabaseService"  # 数据库服务
     message_factory_service: Any  # 消息工厂服务
     message_queue: Any  # 消息队列
-    rpa_task_queue: Any  # RPA任务队列
     is_running: bool  # 是否正在运行
     plugin_manager: Any  # 插件管理器
 
@@ -898,78 +596,23 @@ class ProcessorService(Protocol):
             dict: 服务状态信息。
         """
 
-    def add_rpa_actions(self, actions: list):
-        """
-        线程安全地批量添加RPA动作到队列。
-
-        Args:
-            actions (list): RPA动作对象列表。
-        """
-
-
-# =====================
-# RPAAction协议（所有Action类型）
-# =====================
-class RPAAction(Protocol):
-    """
-    RPA动作协议，所有RPA相关动作的基类。
-    定义RPA动作的基本属性和方法。
-    """
-
-    action_type: RPAActionType  # 动作类型
-    timestamp: datetime  # 时间戳
-
-    def to_dict(self) -> Dict[str, Any]:
-        """
-        转为字典。
-
-        Returns:
-            Dict[str, Any]: 字典形式的动作信息。
-        """
-
-
 __all__ = [
     # 插件基类
     "Plugin",
     # 常量类
     "MessageType",
     "DownloadStatus",
-    "RPAActionType",
     # 主要服务协议
     "Bot",
     "ConfigService",
     "UserService",
     "UserInfo",
     "DatabaseService",
-    "ImageProcessor",
-    "OCRProcessor",
-    "WindowManager",
-    "RPAController",
     "PluginManager",
     "MessageService",
-    "RPAService",
-    "MQTTService",
     "DatDecryptService",
-    "NewFriendCheckService",
     "ProcessorService",
     # 插件上下文与响应
     "PluginExcuteContext",
     "PluginExcuteResponse",
-    # RPA动作实现类
-    "SendTextMessageAction",
-    "SendImageAction",
-    "SendFileAction",
-    "DownloadImageAction",
-    "DownloadVideoAction",
-    "DownloadFileAction",
-    "ForwardMessageAction",
-    "PatAction",
-    "Invite2RoomAction",
-    "RemoveRoomMemberAction",
-    "RenameRoomNameAction",
-    "RenameRoomRemarkAction",
-    "RenameNameInRoomAction",
-    "LeaveRoomAction",
-    "SendPyqAction",
-    "NewFriendAction",
 ]

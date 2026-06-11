@@ -23,7 +23,6 @@ class ProcessorService:
         self,
         user_info: UserInfo,
         message_queue: Queue,
-        rpa_task_queue: Queue,
         db: DatabaseService,
         message_factory_service: MessageFactoryService,
         plugin_manager: PluginManager,
@@ -33,7 +32,6 @@ class ProcessorService:
         self.db = db
         self.message_factory_service = message_factory_service
         self.message_queue = message_queue
-        self.rpa_task_queue = rpa_task_queue
         self.is_running = False
         self.thread: Optional[threading.Thread] = None
         self.message_event = threading.Event()
@@ -44,9 +42,6 @@ class ProcessorService:
         # 初始化消息处理线程池
         self.thread_pool = ThreadPoolExecutor(max_workers=thread_pool_size)
         self.logger.info(f"初始化消息处理器线程池，大小: {thread_pool_size}")
-
-        # 用于同步RPA队列的锁
-        self.rpa_queue_lock = threading.Lock()
 
         self.plugin_manager = plugin_manager
 
@@ -235,11 +230,3 @@ class ProcessorService:
         cache_key = f"{message_db_path}_{sender_id}"
         self.contact_cache[cache_key] = contact
 
-    def add_rpa_actions(self, actions: list):
-        """线程安全地批量添加RPA动作到队列"""
-        if not actions:
-            return
-        with self.rpa_queue_lock:
-            for action in actions:
-                self.rpa_task_queue.put(action)
-        self.logger.debug(f"批量添加了 {len(actions)} 个RPA动作到队列")
