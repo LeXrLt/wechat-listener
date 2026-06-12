@@ -128,12 +128,10 @@ async def decrypt_wechat_dat_async(
             header = await f.read(4)
 
         if header == b"wxgf":
-            logger.debug(f"文件需要二次解密 (wxgf): {dat_path}")
-            return await decrypt_wechat_image_async(
-                image_path=temp_path_decrypted,
-                server_url="http://192.168.2.192:6080/api/v1/decrypt",
-                output_path_base=output_path,
-            )
+            # 项目专注于消息监听，不处理图片。wxgf 格式需要连接远程解密服务器，
+            # 此处直接跳过，避免连接不可达服务器导致的报错。
+            logger.debug(f"跳过 wxgf 格式图片的二次解密: {dat_path}")
+            return None
         else:
             # 只在这里用Path特性
             if header.startswith(b"\xff\xd8\xff"):
