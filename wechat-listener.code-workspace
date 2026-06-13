@@ -8,6 +8,9 @@
         },
         {
             "path": "../wechat-skill"
+        },
+        {
+            "path": "../lift-reporter-skill"
         }
     ]
 }
