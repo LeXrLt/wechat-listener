@@ -5,6 +5,7 @@
 
 import logging
 import os
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -29,6 +30,14 @@ def setup_logging(log_dir: str = "logs", log_level: int = logging.INFO):
     # 配置根日志记录器
     root_logger.setLevel(log_level)
 
+    # 将标准输出/错误流重配置为 UTF-8，避免 Windows 下 GBK 无法编码 emoji 等字符
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, ValueError):
+            # 部分环境下的流不支持 reconfigure，忽略
+            pass
+
     # 创建彩色控制台处理器
     console_handler = colorlog.StreamHandler()
     console_handler.setLevel(log_level)
@@ -50,7 +59,10 @@ def setup_logging(log_dir: str = "logs", log_level: int = logging.INFO):
 
     # 创建文件处理器
     file_handler = RotatingFileHandler(
-        log_path / "app.log", maxBytes=10 * 1024 * 1024, backupCount=5  # 10MB
+        log_path / "app.log",
+        maxBytes=10 * 1024 * 1024,  # 10MB
+        backupCount=5,
+        encoding="utf-8",
     )
     file_handler.setLevel(log_level)
     # 文件日志格式（使用模块名和行号）
