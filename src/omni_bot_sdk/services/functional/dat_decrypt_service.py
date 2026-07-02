@@ -6,9 +6,12 @@ DAT 数据解密服务模块。
 import asyncio
 import heapq
 import logging
+import os
+import shutil
 import threading
 import time
 from concurrent.futures import Future as ConcurrentFuture
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable, Dict, List, Optional, Set
 from collections import deque
@@ -16,7 +19,6 @@ import inspect
 
 import aiofiles
 import aiofiles.os
-import aiohttp
 from omni_bot_sdk.common.config import Config
 from omni_bot_sdk.models import UserInfo
 from omni_bot_sdk.utils.fuck_zxl import decrypt_dat, find_key
@@ -26,26 +28,292 @@ from watchfiles import Change, awatch
 logging.getLogger("watchfiles").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
+WXGF_HEADER = b"wxgf"
+WXGF_MIN_ANIME_MAX_RATIO = 0.6
+WXGF_NALU_PATTERNS = (b"\x00\x00\x00\x01", b"\x00\x00\x01")
+ENV_FFMPEG_PATH = "FFMPEG_PATH"
 
-# --- 异步辅助函数 (无修改) ---
+
+@dataclass
+class _WxgfPartition:
+    offset: int
+    size: int
+    ratio: float
+
+
+def _find_ffmpeg_path() -> Optional[str]:
+    configured_path = os.getenv(ENV_FFMPEG_PATH)
+    if configured_path:
+        candidate = Path(configured_path)
+        if candidate.is_dir():
+            executable = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+            return str(candidate / executable)
+        return configured_path
+    return shutil.which("ffmpeg")
+
+
+def _find_wxgf_partitions(data: bytes) -> list[_WxgfPartition]:
+    if len(data) < 15 or data[:4] != WXGF_HEADER:
+        raise ValueError("invalid wxgf")
+
+    header_len = data[4]
+    if header_len >= len(data):
+        raise ValueError("invalid wxgf header length")
+
+    for pattern in WXGF_NALU_PATTERNS:
+        partitions: list[_WxgfPartition] = []
+        offset = 0
+
+        while header_len + offset <= len(data):
+            search_start = header_len + offset
+            abs_index = data.find(pattern, search_start)
+            if abs_index == -1:
+                break
+
+            rel_index = abs_index - search_start
+            if abs_index < 4:
+                offset += rel_index + 1
+                continue
+
+            size = int.from_bytes(data[abs_index - 4 : abs_index], "big")
+            if size <= 0 or abs_index + size > len(data):
+                offset += rel_index + 1
+                continue
+
+            partitions.append(
+                _WxgfPartition(
+                    offset=abs_index,
+                    size=size,
+                    ratio=size / len(data),
+                )
+            )
+            offset += rel_index + size
+
+        if partitions:
+            return partitions
+
+    raise ValueError("no wxgf data partition found")
+
+
+def _is_wxgf_anime(partitions: list[_WxgfPartition]) -> bool:
+    if len(partitions) <= 1:
+        return False
+    max_ratio = max(partition.ratio for partition in partitions)
+    return max_ratio < WXGF_MIN_ANIME_MAX_RATIO
+
+
+async def _write_bytes(path: Path, data: bytes) -> None:
+    await aiofiles.os.makedirs(str(path.parent), exist_ok=True)
+    async with aiofiles.open(str(path), "wb") as f:
+        await f.write(data)
+
+
+async def _run_ffmpeg(
+    args: list[str], input_data: Optional[bytes] = None
+) -> Optional[bytes]:
+    ffmpeg_path = _find_ffmpeg_path()
+    if not ffmpeg_path:
+        return None
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            *args,
+            stdin=asyncio.subprocess.PIPE if input_data is not None else None,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate(input_data)
+    except FileNotFoundError:
+        logger.warning("ffmpeg 不可用，无法使用 ffmpeg 解码 wxgf。")
+        return None
+    except Exception as e:
+        logger.warning(f"调用 ffmpeg 解码 wxgf 时出错: {e}", exc_info=True)
+        return None
+
+    if proc.returncode != 0:
+        error_text = stderr.decode("utf-8", errors="ignore").strip()
+        logger.warning(f"ffmpeg 解码 wxgf 失败: {error_text}")
+        return None
+    if not stdout:
+        logger.warning("ffmpeg 解码 wxgf 成功返回，但输出为空。")
+        return None
+    return stdout
+
+
+def _convert_hevc_to_jpg_with_cv2(
+    hevc_data: bytes, output_path: str, temp_dir: str
+) -> bool:
+    try:
+        import cv2
+    except ImportError:
+        logger.warning("未安装 OpenCV，无法回退解码静态 wxgf。")
+        return False
+
+    temp_root = Path(temp_dir)
+    temp_root.mkdir(parents=True, exist_ok=True)
+    temp_path = temp_root / f".tmp_wxgf_{time.time_ns()}.h265"
+    try:
+        temp_path.write_bytes(hevc_data)
+
+        capture = cv2.VideoCapture(str(temp_path))
+        try:
+            ok, frame = capture.read()
+        finally:
+            capture.release()
+
+        if not ok or frame is None:
+            logger.warning("OpenCV 无法读取 wxgf 内的 HEVC 首帧。")
+            return False
+
+        final_path = Path(output_path)
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        return bool(
+            cv2.imwrite(str(final_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        )
+    except Exception as e:
+        logger.warning(f"OpenCV 回退解码 wxgf 时出错: {e}", exc_info=True)
+        return False
+    finally:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass
+
+
+async def _convert_hevc_to_jpg_async(
+    hevc_data: bytes, output_path_base: str, temp_dir: str
+) -> Optional[str]:
+    final_output_path = Path(output_path_base).with_suffix(".jpg")
+
+    jpg_data = await _run_ffmpeg(
+        [
+            "-f",
+            "hevc",
+            "-i",
+            "-",
+            "-vframes",
+            "1",
+            "-c:v",
+            "mjpeg",
+            "-q:v",
+            "4",
+            "-f",
+            "image2",
+            "-",
+        ],
+        input_data=hevc_data,
+    )
+    if jpg_data:
+        await _write_bytes(final_output_path, jpg_data)
+        return str(final_output_path)
+
+    loop = asyncio.get_running_loop()
+    ok = await loop.run_in_executor(
+        None,
+        _convert_hevc_to_jpg_with_cv2,
+        hevc_data,
+        str(final_output_path),
+        temp_dir,
+    )
+    if ok:
+        return str(final_output_path)
+    return None
+
+
+async def _convert_wxgf_anime_to_gif_async(
+    anime_frames: list[bytes],
+    mask_frames: list[bytes],
+    output_path_base: str,
+    temp_dir: str,
+) -> Optional[str]:
+    if len(anime_frames) != len(mask_frames):
+        logger.warning(
+            f"wxgf 动画帧数量异常: anime={len(anime_frames)}, mask={len(mask_frames)}"
+        )
+        if anime_frames:
+            return await _convert_hevc_to_jpg_async(
+                anime_frames[0], output_path_base, temp_dir
+            )
+        return None
+
+    if not anime_frames:
+        logger.warning("wxgf 动画没有可解码帧。")
+        return None
+
+    ffmpeg_path = _find_ffmpeg_path()
+    if not ffmpeg_path:
+        logger.warning("wxgf 动画转 GIF 需要 ffmpeg，回退为首帧 JPG。")
+        return await _convert_hevc_to_jpg_async(anime_frames[0], output_path_base, temp_dir)
+
+    temp_root = Path(temp_dir)
+    await aiofiles.os.makedirs(str(temp_root), exist_ok=True)
+    anime_path = temp_root / f".tmp_wxgf_anime_{time.time_ns()}.h265"
+    mask_path = temp_root / f".tmp_wxgf_mask_{time.time_ns()}.h265"
+
+    try:
+        await _write_bytes(anime_path, b"".join(anime_frames))
+        await _write_bytes(mask_path, b"".join(mask_frames))
+
+        gif_data = await _run_ffmpeg(
+            [
+                "-f",
+                "hevc",
+                "-i",
+                str(anime_path),
+                "-f",
+                "hevc",
+                "-i",
+                str(mask_path),
+                "-filter_complex",
+                "[0:v][1:v]alphamerge,split[s0][s1];"
+                "[s0]palettegen[p];[s1][p]paletteuse",
+                "-f",
+                "gif",
+                "-",
+            ]
+        )
+        if gif_data:
+            final_output_path = Path(output_path_base).with_suffix(".gif")
+            await _write_bytes(final_output_path, gif_data)
+            return str(final_output_path)
+
+        logger.warning("wxgf 动画转 GIF 失败，回退为首帧 JPG。")
+        return await _convert_hevc_to_jpg_async(anime_frames[0], output_path_base, temp_dir)
+    finally:
+        for path in (anime_path, mask_path):
+            try:
+                if await aiofiles.os.path.exists(str(path)):
+                    await aiofiles.os.unlink(str(path))
+            except OSError:
+                pass
 
 
 async def decrypt_wechat_image_async(
-    image_path: str, server_url: str, output_path_base: str
+    image_path: str,
+    server_url: Optional[str],
+    output_path_base: str,
+    temp_dir: Optional[str] = None,
 ) -> Optional[str]:
     """
-    异步解密wxgf格式图片，并将结果直接写入最终目标路径。
+    异步解密 wxgf 格式图片，并将结果直接写入最终目标路径。
 
     Args:
-        image_path (str): wxgf格式的临时文件路径。
-        server_url (str): 解密服务器的URL。
+        image_path (str): wxgf 格式的临时文件路径。
+        server_url (str): 保留参数，兼容旧的远程解密调用方式。
         output_path_base (str): 最终文件的基础路径（不含扩展名）。
+        temp_dir (str): 临时文件目录。
 
     Returns:
-        Optional[str]: 成功后的最终文件完整路径，否则为None。
+        Optional[str]: 成功后的最终文件完整路径，否则为 None。
     """
+    _ = server_url
+    temp_dir = temp_dir or str(Path(image_path).parent)
     try:
-        # 只在需要用Path特性时转为Path
         if not await aiofiles.os.path.exists(image_path):
             logger.warning(f"wxgf文件不存在，无法进行二次解密: {image_path}")
             return None
@@ -53,38 +321,24 @@ async def decrypt_wechat_image_async(
         async with aiofiles.open(image_path, "rb") as f:
             file_data = await f.read()
 
-        data = aiohttp.FormData()
-        data.add_field(
-            "file",
-            file_data,
-            filename=Path(image_path).name,
-            content_type="application/octet-stream",
-        )
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(server_url, data=data, timeout=30) as response:
-                if response.status == 200:
-                    content_type = response.headers.get("Content-Type", "")
-                    ext = ".png"
-                    if "image/jpeg" in content_type:
-                        ext = ".jpg"
-                    elif "image/gif" in content_type:
-                        ext = ".gif"
-
-                    # 只在这里用Path特性
-                    final_output_path = Path(output_path_base).with_suffix(ext)
-                    output_dir = final_output_path.parent
-                    await aiofiles.os.makedirs(str(output_dir), exist_ok=True)
-                    async with aiofiles.open(str(final_output_path), "wb") as f:
-                        await f.write(await response.read())
-
-                    return str(final_output_path)
+        partitions = _find_wxgf_partitions(file_data)
+        if _is_wxgf_anime(partitions):
+            mask_frames: list[bytes] = []
+            anime_frames: list[bytes] = []
+            for index, partition in enumerate(partitions):
+                frame = file_data[partition.offset : partition.offset + partition.size]
+                if index % 2 == 0:
+                    mask_frames.append(frame)
                 else:
-                    error_text = await response.text()
-                    logger.error(
-                        f"解密失败，状态码: {response.status}, 详情: {error_text}"
-                    )
-                    return None
+                    anime_frames.append(frame)
+
+            return await _convert_wxgf_anime_to_gif_async(
+                anime_frames, mask_frames, output_path_base, temp_dir
+            )
+
+        partition = max(partitions, key=lambda item: item.ratio)
+        hevc_data = file_data[partition.offset : partition.offset + partition.size]
+        return await _convert_hevc_to_jpg_async(hevc_data, output_path_base, temp_dir)
     except Exception as e:
         logger.error(f"解密wxgf图片时出错: {str(e)}", exc_info=True)
         return None
@@ -127,11 +381,13 @@ async def decrypt_wechat_dat_async(
         async with aiofiles.open(temp_path_decrypted, "rb") as f:
             header = await f.read(4)
 
-        if header == b"wxgf":
-            # 项目专注于消息监听，不处理图片。wxgf 格式需要连接远程解密服务器，
-            # 此处直接跳过，避免连接不可达服务器导致的报错。
-            logger.debug(f"跳过 wxgf 格式图片的二次解密: {dat_path}")
-            return None
+        if header == WXGF_HEADER:
+            return await decrypt_wechat_image_async(
+                temp_path_decrypted,
+                server_url=None,
+                output_path_base=output_path,
+                temp_dir=temp_dir,
+            )
         else:
             # 只在这里用Path特性
             if header.startswith(b"\xff\xd8\xff"):

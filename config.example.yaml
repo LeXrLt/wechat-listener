@@ -48,6 +48,9 @@ plugins:
     priority: 500
     push_to_mqtt: true
     mqtt_topic: wechat/messages
+    push_image: true
+    max_image_bytes: 5242880
+    image_decrypt_timeout: 60.0
 
 wxgf:
   # 微信GF解析API地址，暂时未开放，查看roammap更新计划

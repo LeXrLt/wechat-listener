@@ -138,3 +138,5 @@ aes_xor_key.dat
 runtime_images
 test_image.png
 config.yaml
+demo_decrypt_output/
+.demo_decrypt_tmp/

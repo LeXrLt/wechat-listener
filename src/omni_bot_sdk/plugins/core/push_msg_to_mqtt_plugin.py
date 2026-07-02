@@ -11,8 +11,10 @@
 - 需要配置MQTT连接信息
 """
 
+import base64
 import json
 import logging
+import os
 from typing import TYPE_CHECKING
 from pydantic import BaseModel
 from paho.mqtt.client import Client as MqttClient
@@ -36,6 +38,9 @@ class PushMsgToMqttPluginConfig(BaseModel):
     priority: int = 500
     push_to_mqtt: bool = True
     mqtt_topic: str = "wechat/messages"
+    push_image: bool = True
+    max_image_bytes: int = 5 * 1024 * 1024
+    image_decrypt_timeout: float = 60.0
 
 
 class PushMsgToMqttPlugin(Plugin):
@@ -106,11 +111,12 @@ class PushMsgToMqttPlugin(Plugin):
     def _format_message(self, message):
         """格式化消息为字典"""
         sender = self.user.nickname if message.is_self else message.contact.display_name
-        content = (
-            message.to_text()
-            if message.local_type == MessageType.Quote
-            else message.parsed_content
-        )
+        if message.local_type == MessageType.Quote:
+            content = message.to_text()
+        elif message.local_type == MessageType.Image:
+            content = "[图片]"
+        else:
+            content = message.parsed_content
         return {
             "speaker_name": sender,
             "content": str(content or ""),
@@ -145,10 +151,8 @@ class PushMsgToMqttPlugin(Plugin):
         """
         message = context.get_message()
 
-        if (
-            message.local_type != MessageType.Text
-            and message.local_type != MessageType.Quote
-        ):
+        allowed_types = (MessageType.Text, MessageType.Quote, MessageType.Image)
+        if message.local_type not in allowed_types:
             return
         # 判断消息来源
         if message.is_chatroom:
@@ -165,6 +169,12 @@ class PushMsgToMqttPlugin(Plugin):
             **formatted_message,
         }
 
+        # 图片消息：读取图片并以 base64 附加到 payload（方案2）
+        if message.local_type == MessageType.Image and getattr(
+            self.plugin_config, "push_image", True
+        ):
+            await self._attach_image_base64(message, payload)
+
         # 输出DEBUG日志
         self.logger.debug(
             f"【{room_name}】【{formatted_message['speaker_name']}】【{formatted_message['content']}】"
@@ -176,6 +186,201 @@ class PushMsgToMqttPlugin(Plugin):
                 self.logger.debug(f"消息已推送到MQTT: {room_name}")
             else:
                 self.logger.warning(f"消息推送到MQTT失败: {room_name}")
+
+    async def _attach_image_base64(self, message, payload: dict) -> None:
+        """读取图片文件并以 base64 附加到 payload。"""
+        try:
+            data, ext = await self._get_image_bytes(message)
+        except Exception as e:
+            self.logger.warning(f"读取图片失败: {e}")
+            data, ext = None, None
+
+        if not data:
+            payload["image_available"] = False
+            self.logger.debug("图片不可用（未解密或文件缺失），仅推送元数据")
+            return
+
+        max_bytes = getattr(self.plugin_config, "max_image_bytes", 5 * 1024 * 1024)
+        if len(data) > max_bytes:
+            payload["image_available"] = False
+            payload["image_reason"] = "oversize"
+            self.logger.warning(
+                f"图片大小 {len(data)} 超过上限 {max_bytes}，跳过 base64 传输"
+            )
+            return
+
+        payload["image_available"] = True
+        payload["image_format"] = ext
+        payload["image_size"] = len(data)
+        payload["image_base64"] = base64.b64encode(data).decode("ascii")
+        self.logger.debug(f"图片已编码，格式={ext}，大小={len(data)} 字节")
+
+    async def _get_image_bytes(self, message):
+        """获取图片字节与扩展名，必要时等待 dat 解密完成。"""
+        image_candidates = self._image_candidates(message)
+        target = self._first_existing_path(image_candidates)
+
+        if not target:
+            dat_service = getattr(self.bot, "dat_decrypt_service", None)
+            if dat_service is not None:
+                timeout = getattr(self.plugin_config, "image_decrypt_timeout", 60.0)
+                dat_candidates = self._dat_candidates(message)
+                existing_dat_paths = [
+                    path for path in dat_candidates if os.path.exists(path)
+                ]
+                missing_thumb_dat_paths = [
+                    path
+                    for path in dat_candidates
+                    if path not in existing_dat_paths and self._is_thumb_path(path)
+                ]
+
+                for dat_path in existing_dat_paths + missing_thumb_dat_paths:
+                    target = self._first_existing_path(image_candidates)
+                    if target:
+                        break
+
+                    try:
+                        decrypted = await dat_service.await_decryption(
+                            dat_path,
+                            timeout=timeout,
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"等待图片解密失败: {e}")
+                        target = self._first_existing_path(image_candidates)
+                        if target:
+                            break
+                        continue
+
+                    if decrypted and os.path.exists(decrypted):
+                        target = decrypted
+                        break
+
+                    target = self._first_existing_path(
+                        self._image_candidates_from_base(os.path.splitext(dat_path)[0])
+                    )
+                    if target:
+                        break
+
+        if not target:
+            target = self._first_existing_path(image_candidates)
+
+        if not target:
+            return None, None
+
+        ext = os.path.splitext(target)[1].lstrip(".").lower() or "jpg"
+        with open(target, "rb") as f:
+            return f.read(), ext
+
+    def _image_candidates(self, message) -> list[str]:
+        """按优先级生成可直接读取的图片候选路径。"""
+        path = getattr(message, "path", "") or ""
+        thumb = getattr(message, "thumb_path", "") or ""
+        candidates = []
+
+        for candidate in (path, thumb):
+            candidates.extend(self._image_candidates_from_path(candidate))
+
+        return self._dedupe_paths(candidates)
+
+    def _dat_candidates(self, message) -> list[str]:
+        """按优先级生成需要等待解密的 dat 候选路径。"""
+        path = getattr(message, "path", "") or ""
+        thumb = getattr(message, "thumb_path", "") or ""
+        candidates = []
+
+        for candidate in (path, thumb):
+            candidates.extend(self._dat_candidates_from_path(candidate))
+
+        return self._dedupe_paths(candidates)
+
+    def _image_candidates_from_path(self, path: str) -> list[str]:
+        path = self._normalize_media_path(path)
+        if not path:
+            return []
+
+        base, ext = os.path.splitext(path)
+        candidates = []
+        if ext.lower() in (".jpg", ".jpeg", ".png", ".gif"):
+            candidates.append(path)
+        if base:
+            for related_base in self._related_image_bases(base):
+                candidates.extend(self._image_candidates_from_base(related_base))
+        return candidates
+
+    def _image_candidates_from_base(self, base: str) -> list[str]:
+        if not base:
+            return []
+        return [f"{base}{ext}" for ext in (".jpg", ".jpeg", ".png", ".gif")]
+
+    def _dat_candidates_from_path(self, path: str) -> list[str]:
+        path = self._normalize_media_path(path)
+        if not path:
+            return []
+
+        base, _ = os.path.splitext(path)
+        return [f"{base}.dat" for base in self._related_image_bases(base)]
+
+    def _dat_path_from_image_path(self, path: str) -> str:
+        path = self._normalize_media_path(path)
+        if not path:
+            return ""
+        base, _ = os.path.splitext(path)
+        return f"{base}.dat" if base else ""
+
+    def _related_image_bases(self, base: str) -> list[str]:
+        if not base:
+            return []
+
+        root_base = self._root_image_base(base)
+        candidates = [base]
+
+        if root_base:
+            candidates.extend([root_base, f"{root_base}_h", f"{root_base}_t"])
+
+        return self._dedupe_paths(candidates)
+
+    def _root_image_base(self, base: str) -> str:
+        dirname = os.path.dirname(base)
+        stem = os.path.basename(base)
+        if stem.endswith("_h") or stem.endswith("_t"):
+            stem = stem[:-2]
+        return os.path.join(dirname, stem) if dirname else stem
+
+    def _normalize_media_path(self, path: str) -> str:
+        if not path:
+            return ""
+
+        path = os.path.normpath(path)
+        drive, _ = os.path.splitdrive(path)
+        if os.path.isabs(path) and drive:
+            return path
+
+        user_info = getattr(self.bot, "user_info", None)
+        data_dir = getattr(user_info, "data_dir", "") if user_info else ""
+        if not data_dir:
+            return path
+
+        path = path.lstrip("\\/")
+        return os.path.normpath(os.path.join(data_dir, path))
+
+    def _first_existing_path(self, paths: list[str]) -> str:
+        for path in paths:
+            if path and os.path.exists(path):
+                return path
+        return ""
+
+    def _dedupe_paths(self, paths: list[str]) -> list[str]:
+        seen = set()
+        result = []
+        for path in paths:
+            if path and path not in seen:
+                seen.add(path)
+                result.append(path)
+        return result
+
+    def _is_thumb_path(self, path: str) -> bool:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        return stem.endswith("_t")
 
     def get_plugin_name(self) -> str:
         return self.name
